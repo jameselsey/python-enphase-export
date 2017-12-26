@@ -1,0 +1,7 @@
+export ENHPASE_USER_ID=<your user id>
+export ENPHASE_KEY=<your developer key>
+export ENPHASE_SYSTEM_ID=<your system id>
+export TIME_ZONE=Australia/Melbourne
+export SLEEP_BETWEEN_REQUESTS=10
+export START_DATE=20161230
+export END_DATE=20170102
