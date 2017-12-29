@@ -1,0 +1,260 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'iot stack, includes RDS for iot data and 1 lambda to import data from enphase'
+Parameters:
+  enphaseUserId:
+    Type: String
+  enphaseKey:
+    Type: String
+  enphaseSystemId:
+    Type: String
+  timezone:
+    Type: String
+  sleepBetweenRequests:
+    Type: String
+  startDate:
+    Type: String
+  endDate:
+    Type: String
+  dbUser:
+    Type: String
+  dbPassword:
+    Type: String
+  dbPort:
+    Type: String
+  dbName:
+    Type: String
+
+Resources:
+  vpc:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: 172.32.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: iot-vpc
+
+  privateSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      CidrBlock: 172.32.96.0/20
+      VpcId: !Ref vpc
+      AvailabilityZone: ap-southeast-2c
+      Tags:
+        - Key: Name
+          Value: private-subnet-1
+  privateSubnet2:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      CidrBlock: 172.32.128.0/20
+      VpcId: !Ref vpc
+      AvailabilityZone: ap-southeast-2a
+      Tags:
+        - Key: Name
+          Value: private-subnet-2
+  publicSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      CidrBlock: 172.32.144.0/20
+      VpcId: !Ref vpc
+      Tags:
+        - Key: Name
+          Value: public-subnet-1
+
+  publicEip:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+
+  internetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - Key: Name
+          Value: internet gateway
+
+  natGateway:
+    Type: "AWS::EC2::NatGateway"
+    Properties:
+      AllocationId: !GetAtt publicEip.AllocationId
+      SubnetId: !Ref publicSubnet1
+
+  attachGateway:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId: !Ref vpc
+      InternetGatewayId: !Ref internetGateway
+
+  routeTablePublic:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref vpc
+      Tags:
+        - Key: Name
+          Value: route-table-public
+  routeTablePrivate:
+      Type: "AWS::EC2::RouteTable"
+      Properties:
+        VpcId: !Ref vpc
+        Tags:
+          - Key: Name
+            Value: route-table-private
+
+  routeTablePrivateSubnet1:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref routeTablePrivate
+      SubnetId: !Ref privateSubnet1
+  routeTablePrivateSubnet2:
+      Type: "AWS::EC2::SubnetRouteTableAssociation"
+      Properties:
+        RouteTableId: !Ref routeTablePrivate
+        SubnetId: !Ref privateSubnet2
+  routeTablePublicSubnet1:
+      Type: "AWS::EC2::SubnetRouteTableAssociation"
+      Properties:
+        RouteTableId: !Ref routeTablePublic
+        SubnetId: !Ref publicSubnet1
+
+  allowAllRoutePrivate:
+      Type: AWS::EC2::Route
+      DependsOn:
+        - natGateway
+      Properties:
+        RouteTableId: !Ref routeTablePrivate
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId: !Ref natGateway
+
+  allowAllRoutePublic:
+      Type: AWS::EC2::Route
+      DependsOn:
+        - internetGateway
+      Properties:
+        RouteTableId: !Ref routeTablePublic
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId: !Ref internetGateway
+
+  securityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName: lambda-rds
+      GroupDescription: Security group for lambda RDS integration
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIp: 172.32.96.0/20
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIp: 172.32.128.0/20
+      Tags:
+        - Key: Name
+          Value: security-group-lambda-rds
+      VpcId: !Ref vpc
+
+
+
+  dbSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: private subnets for rds
+      SubnetIds:
+        - !Ref privateSubnet1
+        - !Ref privateSubnet2
+      Tags:
+        - Key: Name
+          Value: private-subnet
+
+  FunctionIAMRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+        ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaENIManagementAccess
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonRDSFullAccess
+        - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+        Policies:
+        - PolicyName: 'custom-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - rds:*
+              Resource:
+              - arn:aws:rds:::*
+            - Effect: Allow
+              Action:
+              - s3:*
+              Resource:
+              - arn:aws:s3:::iotdb-bucket
+
+  mysql:
+    Type: "AWS::RDS::DBInstance"
+    Properties:
+      DBName: !Ref DBNAME
+      DBInstanceClass: db.t2.micro
+      DBInstanceIdentifier: iotdb
+      Engine: "MySQL"
+      EngineVersion: "5.7.19"
+      AllocatedStorage: 20
+      StorageType: gp2
+      MasterUsername: !Ref DBUSER
+      MasterUserPassword: !Ref DBPASSWORD
+      DBSubnetGroupName: !Ref dbSubnetGroup
+      VPCSecurityGroups:
+        - !Ref securityGroup
+      Tags:
+        - Key: "Name"
+          Value: !Ref DBNAME
+
+  Function:
+      Type: AWS::Serverless::Function
+      DependsOn:
+      - FunctionIAMRole
+      Properties:
+        Handler: stats_to_db.lambda_handler
+        Runtime: python3.6
+        CodeUri: ./node-importer.zip
+        MemorySize: 128
+        Timeout: 30
+        Role: !GetAtt FunctionIAMRole.Arn
+        FunctionName: enphase-stats-to-db
+        VpcConfig:
+          SecurityGroupIds:
+            - !Ref securityGroup
+          SubnetIds:
+            - !Ref privateSubnet1
+            - !Ref privateSubnet2
+        Environment:
+          Variables:
+            ENHPASE_USER_ID: !Ref ENHPASEUSERID
+            ENPHASE_KEY: !Ref ENPHASEKEY
+            ENPHASE_SYSTEM_ID: !Ref ENPHASESYSTEMID
+            TIME_ZONE: !Ref TIMEZONE
+            SLEEP_BETWEEN_REQUESTS: !Ref SLEEPBETWEENREQUESTS
+            START_DATE: !Ref STARTDATE
+            END_DATE: !Ref ENDDATE
+            DB_HOST: !GetAtt mysql.Endpoint.Address
+            DB_USER: !Ref DBUSER
+            DB_PASSWORD: !Ref DBPASSWORD
+            DB_PORT: !Ref DBPORT
+            DB_NAME: !Ref DBNAME
+        Events:
+          ScheduleEvent:
+            Type: Schedule
+            Properties:
+              Schedule: rate(1 hour)
