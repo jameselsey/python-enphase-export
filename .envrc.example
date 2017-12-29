@@ -4,4 +4,10 @@ export ENPHASE_SYSTEM_ID=<your system id>
 export TIME_ZONE=Australia/Melbourne
 export SLEEP_BETWEEN_REQUESTS=10
 export START_DATE=20161230
-export END_DATE=20170102
+export END_DATE=20161230
+
+export DB_HOST=127.0.0.1
+export DB_USER=dbuser
+export DB_PASSWORD=password
+export DB_PORT=3306
+export DB_NAME=iotdb
