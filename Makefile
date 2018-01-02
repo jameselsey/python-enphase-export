@@ -38,7 +38,7 @@ deploy:
 		--template-file cloudformation.out.yaml \
 		--stack-name iot-stack \
 		--capabilities CAPABILITY_IAM \
-		--profile jameselsey
+		--profile jameselsey \
 		--parameter-overrides \
 			enphaseUserId=$(ENHPASE_USER_ID) \
 			enphaseKey=$(ENPHASE_KEY) \
@@ -54,3 +54,6 @@ deploy:
 
 delete:
 	aws cloudformation delete-stack --stack-name iot-stack --profile jameselsey
+
+local:
+	python3 stats_to_db.py

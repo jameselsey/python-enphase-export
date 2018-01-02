@@ -6,6 +6,9 @@ import MySQLdb
 import logging
 from warnings import filterwarnings
 
+
+
+
 def lambda_handler(event, context):
 
     root = logging.getLogger()
@@ -94,3 +97,7 @@ def lambda_handler(event, context):
             conn.rollback()
 
     conn.close()
+
+#  This is so you can run it locally using: python3 stats_to_db.py
+if __name__ == "__main__":
+    lambda_handler("Test Event", "Test Context")
