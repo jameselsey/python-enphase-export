@@ -38,6 +38,8 @@ Resources:
         - Key: Name
           Value: iot-vpc
 
+# Subnetting and routing
+
   privateSubnet1:
     Type: "AWS::EC2::Subnet"
     Properties:
@@ -61,9 +63,61 @@ Resources:
     Properties:
       CidrBlock: 172.32.144.0/20
       VpcId: !Ref vpc
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
           Value: public-subnet-1
+
+  routeTablePublic:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref vpc
+      Tags:
+        - Key: Name
+          Value: route-table-public
+  routeTablePrivate:
+      Type: "AWS::EC2::RouteTable"
+      Properties:
+        VpcId: !Ref vpc
+        Tags:
+          - Key: Name
+            Value: route-table-private
+
+  allowAllRoutePrivate:
+      Type: AWS::EC2::Route
+      DependsOn:
+        - natGateway
+      Properties:
+        RouteTableId: !Ref routeTablePrivate
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId: !Ref natGateway
+
+  allowAllRoutePublic:
+      Type: AWS::EC2::Route
+      DependsOn:
+        - internetGateway
+      Properties:
+        RouteTableId: !Ref routeTablePublic
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId: !Ref internetGateway
+
+  routeTablePrivateSubnet1:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      RouteTableId: !Ref routeTablePrivate
+      SubnetId: !Ref privateSubnet1
+  routeTablePrivateSubnet2:
+      Type: "AWS::EC2::SubnetRouteTableAssociation"
+      Properties:
+        RouteTableId: !Ref routeTablePrivate
+        SubnetId: !Ref privateSubnet2
+  routeTablePublicSubnet1:
+      Type: "AWS::EC2::SubnetRouteTableAssociation"
+      Properties:
+        RouteTableId: !Ref routeTablePublic
+        SubnetId: !Ref publicSubnet1
+
+# Gateways
 
   publicEip:
     Type: "AWS::EC2::EIP"
@@ -89,60 +143,11 @@ Resources:
       VpcId: !Ref vpc
       InternetGatewayId: !Ref internetGateway
 
-  routeTablePublic:
-    Type: "AWS::EC2::RouteTable"
-    Properties:
-      VpcId: !Ref vpc
-      Tags:
-        - Key: Name
-          Value: route-table-public
-  routeTablePrivate:
-      Type: "AWS::EC2::RouteTable"
-      Properties:
-        VpcId: !Ref vpc
-        Tags:
-          - Key: Name
-            Value: route-table-private
-
-  routeTablePrivateSubnet1:
-    Type: "AWS::EC2::SubnetRouteTableAssociation"
-    Properties:
-      RouteTableId: !Ref routeTablePrivate
-      SubnetId: !Ref privateSubnet1
-  routeTablePrivateSubnet2:
-      Type: "AWS::EC2::SubnetRouteTableAssociation"
-      Properties:
-        RouteTableId: !Ref routeTablePrivate
-        SubnetId: !Ref privateSubnet2
-  routeTablePublicSubnet1:
-      Type: "AWS::EC2::SubnetRouteTableAssociation"
-      Properties:
-        RouteTableId: !Ref routeTablePublic
-        SubnetId: !Ref publicSubnet1
-
-  allowAllRoutePrivate:
-      Type: AWS::EC2::Route
-      DependsOn:
-        - natGateway
-      Properties:
-        RouteTableId: !Ref routeTablePrivate
-        DestinationCidrBlock: 0.0.0.0/0
-        NatGatewayId: !Ref natGateway
-
-  allowAllRoutePublic:
-      Type: AWS::EC2::Route
-      DependsOn:
-        - internetGateway
-      Properties:
-        RouteTableId: !Ref routeTablePublic
-        DestinationCidrBlock: 0.0.0.0/0
-        GatewayId: !Ref internetGateway
-
-  securityGroup:
+  securityGroupRds:
     Type: "AWS::EC2::SecurityGroup"
     Properties:
-      GroupName: lambda-rds
-      GroupDescription: Security group for lambda RDS integration
+      GroupName: rds-iotdb
+      GroupDescription: RDS security group iotdb
       SecurityGroupIngress:
       - IpProtocol: tcp
         FromPort: '3306'
@@ -154,13 +159,82 @@ Resources:
         CidrIp: 172.32.128.0/20
       Tags:
         - Key: Name
-          Value: security-group-lambda-rds
+          Value: sg-rds-iotdb
       VpcId: !Ref vpc
 
+  securityGroupBastion:
+    Type: "AWS::EC2::SecurityGroup"
+    DependsOn:
+    - securityGroupRds
+    Properties:
+      GroupName: bastion
+      GroupDescription: Bastion security group
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        DestinationSecurityGroupId: !Ref securityGroupRds
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        DestinationSecurityGroupId: !Ref securityGroupRds
+      Tags:
+        - Key: Name
+          Value: sg-bastion
+      VpcId: !Ref vpc
+
+  securityGroupIngressRdsFromBastion:
+    Type: "AWS::EC2::SecurityGroupIngress"
+    DependsOn:
+    - securityGroupRds
+    - securityGroupBastion
+    Properties:
+      IpProtocol: tcp
+      FromPort: '3306'
+      ToPort: '3306'
+      Description: RDS inbound from bastion
+      GroupId: !Ref securityGroupRds
+      SourceSecurityGroupId: !Ref securityGroupBastion
+
+  bastionInstance:
+    Type: "AWS::EC2::Instance"
+    DependsOn:
+    - securityGroupBastion
+    - publicSubnet1
+    - routeTablePublic
+    Properties:
+      InstanceType: t2.micro
+      ImageId: ami-ff4ea59d
+      KeyName: bastion-keypair
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeleteOnTermination: true
+          Description: Public IP
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref securityGroupBastion
+          SubnetId: !Ref publicSubnet1
+      SourceDestCheck: true
+      Tags:
+        - Key: Name
+          Value: bastion-host
+      Tenancy: default
 
 
   dbSubnetGroup:
     Type: "AWS::RDS::DBSubnetGroup"
+    DependsOn:
+    - privateSubnet1
+    - privateSubnet2
     Properties:
       DBSubnetGroupDescription: private subnets for rds
       SubnetIds:
@@ -205,21 +279,21 @@ Resources:
   mysql:
     Type: "AWS::RDS::DBInstance"
     Properties:
-      DBName: !Ref DBNAME
+      DBName: !Ref dbName
       DBInstanceClass: db.t2.micro
-      DBInstanceIdentifier: iotdb
+      DBInstanceIdentifier: !Ref dbName
       Engine: "MySQL"
       EngineVersion: "5.7.19"
       AllocatedStorage: 20
       StorageType: gp2
-      MasterUsername: !Ref DBUSER
-      MasterUserPassword: !Ref DBPASSWORD
+      MasterUsername: !Ref dbUser
+      MasterUserPassword: !Ref dbPassword
       DBSubnetGroupName: !Ref dbSubnetGroup
       VPCSecurityGroups:
-        - !Ref securityGroup
+        - !Ref securityGroupRds
       Tags:
         - Key: "Name"
-          Value: !Ref DBNAME
+          Value: !Ref dbName
 
   Function:
       Type: AWS::Serverless::Function
@@ -235,24 +309,24 @@ Resources:
         FunctionName: enphase-stats-to-db
         VpcConfig:
           SecurityGroupIds:
-            - !Ref securityGroup
+            - !Ref securityGroupRds
           SubnetIds:
             - !Ref privateSubnet1
             - !Ref privateSubnet2
         Environment:
           Variables:
-            ENHPASE_USER_ID: !Ref ENHPASEUSERID
-            ENPHASE_KEY: !Ref ENPHASEKEY
-            ENPHASE_SYSTEM_ID: !Ref ENPHASESYSTEMID
-            TIME_ZONE: !Ref TIMEZONE
-            SLEEP_BETWEEN_REQUESTS: !Ref SLEEPBETWEENREQUESTS
-            START_DATE: !Ref STARTDATE
-            END_DATE: !Ref ENDDATE
+            ENHPASE_USER_ID: !Ref enphaseUserId
+            ENPHASE_KEY: !Ref enphaseKey
+            ENPHASE_SYSTEM_ID: !Ref enphaseSystemId
+            TIME_ZONE: !Ref timezone
+            SLEEP_BETWEEN_REQUESTS: !Ref sleepBetweenRequests
+            START_DATE: !Ref startDate
+            END_DATE: !Ref endDate
             DB_HOST: !GetAtt mysql.Endpoint.Address
-            DB_USER: !Ref DBUSER
-            DB_PASSWORD: !Ref DBPASSWORD
-            DB_PORT: !Ref DBPORT
-            DB_NAME: !Ref DBNAME
+            DB_USER: !Ref dbUser
+            DB_PASSWORD: !Ref dbPassword
+            DB_PORT: !Ref dbPort
+            DB_NAME: !Ref dbName
         Events:
           ScheduleEvent:
             Type: Schedule
